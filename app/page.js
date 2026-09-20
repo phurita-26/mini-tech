@@ -1,26 +1,21 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { supabase } from "../lib/supabaseClient";
+import { supabase } from "../../lib/supabaseClient";
 
-export default function HomePage() {
-  // รายการสินค้าทั้งหมด
+export default function SellPage() {
+  // รายการสินค้าทั้งหมด (สำหรับ dropdown)
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // ฟอร์มเพิ่มสินค้าใหม่
-  const [form, setForm] = useState({
-    sku: "",
-    name: "",
-    price: "",
-    stock: "",
-    unit: "",
-  });
+  // สินค้าที่เลือกและจำนวนที่จะขาย
+  const [selectedProductId, setSelectedProductId] = useState("");
+  const [quantity, setQuantity] = useState("");
 
-  // สถานะสำหรับแก้ไขสินค้าแบบ inline (เก็บ id แถวที่กำลังแก้ไข + ค่าฟอร์มแก้ไข)
-  const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({});
+  // สถานะระหว่างบันทึกการขาย + ข้อความแจ้งผล
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
 
   // โหลดสินค้าทั้งหมดตอน mount
   useEffect(() => {
@@ -32,7 +27,7 @@ export default function HomePage() {
     const { data, error } = await supabase
       .from("products")
       .select("*")
-      .order("created_at", { ascending: false });
+      .order("name", { ascending: true });
 
     if (error) {
       setError(error.message);
@@ -42,252 +37,192 @@ export default function HomePage() {
     setLoading(false);
   }
 
-  // ---------- เพิ่มสินค้าใหม่ ----------
-  function handleFormChange(e) {
-    setForm({ ...form, [e.target.name]: e.target.value });
+  // หาสินค้าที่เลือกอยู่จาก id
+  const selectedProduct = products.find((p) => p.id === selectedProductId);
+
+  // คำนวณยอดรวม = ราคา x จำนวน
+  const qtyNumber = parseInt(quantity) || 0;
+  const totalPrice = selectedProduct
+    ? Number(selectedProduct.price) * qtyNumber
+    : 0;
+
+  function resetForm() {
+    setSelectedProductId("");
+    setQuantity("");
   }
 
-  async function handleAddProduct(e) {
+  // ---- ฟังก์ชันส่งแจ้งเตือนเข้า Telegram ผ่าน API Route ฝั่ง server ----
+  // ยิงไปที่ /api/notify-telegram แทนการเรียก Telegram API ตรงจาก client
+  // เพื่อไม่ให้ Bot Token หลุดไปอยู่ใน client bundle
+  async function notifyTelegram(text) {
+    try {
+      await fetch("/api/notify-telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+    } catch (err) {
+      // ไม่ให้ error จาก Telegram กระทบระบบขาย แค่ log ไว้เฉยๆ
+      console.error("แจ้งเตือน Telegram ไม่สำเร็จ:", err);
+    }
+  }
+
+  async function handleSell(e) {
     e.preventDefault();
-    if (!form.sku || !form.name) {
-      alert("กรุณากรอก SKU และชื่อสินค้า");
+    setMessage("");
+
+    if (!selectedProduct) {
+      alert("กรุณาเลือกสินค้า");
+      return;
+    }
+    if (qtyNumber <= 0) {
+      alert("กรุณากรอกจำนวนที่จะขายให้ถูกต้อง");
       return;
     }
 
-    const { error } = await supabase.from("products").insert([
+    // ตรวจสอบว่า stock เพียงพอหรือไม่
+    if (qtyNumber > selectedProduct.stock) {
+      alert(
+        `สินค้าคงเหลือไม่เพียงพอ (คงเหลือ ${selectedProduct.stock} ${selectedProduct.unit})`
+      );
+      return;
+    }
+
+    setSaving(true);
+
+    // 1) บันทึกรายการลงตาราง sales
+    const { error: saleError } = await supabase.from("sales").insert([
       {
-        sku: form.sku,
-        name: form.name,
-        price: parseFloat(form.price) || 0,
-        stock: parseInt(form.stock) || 0,
-        unit: form.unit,
+        product_id: selectedProduct.id,
+        product_name: selectedProduct.name,
+        quantity: qtyNumber,
+        total_price: totalPrice,
+        sold_at: new Date().toISOString(),
       },
     ]);
 
-    if (error) {
-      alert("เพิ่มสินค้าไม่สำเร็จ: " + error.message);
+    if (saleError) {
+      alert("บันทึกการขายไม่สำเร็จ: " + saleError.message);
+      setSaving(false);
       return;
     }
 
-    // เคลียร์ฟอร์มและโหลดข้อมูลใหม่
-    setForm({ sku: "", name: "", price: "", stock: "", unit: "" });
-    fetchProducts();
-  }
-
-  // ---------- ลบสินค้า ----------
-  async function handleDelete(id) {
-    const confirmDelete = confirm("ยืนยันการลบสินค้านี้?");
-    if (!confirmDelete) return;
-
-    const { error } = await supabase.from("products").delete().eq("id", id);
-    if (error) {
-      alert("ลบไม่สำเร็จ: " + error.message);
-      return;
-    }
-    fetchProducts();
-  }
-
-  // ---------- แก้ไขสินค้าแบบ inline ----------
-  function startEdit(product) {
-    setEditingId(product.id);
-    setEditForm({
-      sku: product.sku,
-      name: product.name,
-      price: product.price,
-      stock: product.stock,
-      unit: product.unit,
-    });
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditForm({});
-  }
-
-  function handleEditChange(e) {
-    setEditForm({ ...editForm, [e.target.name]: e.target.value });
-  }
-
-  async function handleSaveEdit(id) {
-    const { error } = await supabase
+    // 2) อัปเดต stock ในตาราง products ให้ลดลงตามจำนวนที่ขาย
+    const newStock = selectedProduct.stock - qtyNumber;
+    const { error: updateError } = await supabase
       .from("products")
-      .update({
-        sku: editForm.sku,
-        name: editForm.name,
-        price: parseFloat(editForm.price) || 0,
-        stock: parseInt(editForm.stock) || 0,
-        unit: editForm.unit,
-      })
-      .eq("id", id);
+      .update({ stock: newStock })
+      .eq("id", selectedProduct.id);
 
-    if (error) {
-      alert("บันทึกไม่สำเร็จ: " + error.message);
+    if (updateError) {
+      alert("อัปเดตสต๊อกไม่สำเร็จ: " + updateError.message);
+      setSaving(false);
       return;
     }
 
-    cancelEdit();
+    // ---- แจ้งเตือน Telegram หลังตัดสต๊อกสำเร็จ (ไม่บล็อก flow การขาย) ----
+    const soldTime = new Date().toLocaleString("th-TH", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+
+    const orderMessage =
+      `🛍️ <b>มีรายการขายใหม่!</b>\n` +
+      `- สินค้า: ${selectedProduct.name}\n` +
+      `- จำนวน: ${qtyNumber} ชิ้น\n` +
+      `- ราคารวม: ${totalPrice.toFixed(2)} บาท\n` +
+      `- สต๊อกคงเหลือปัจจุบัน: ${newStock} ชิ้น\n` +
+      `- เวลา: ${soldTime}`;
+
+    // ยิงแจ้งเตือน Order ใหม่ (มี try/catch อยู่ในฟังก์ชันเอง ไม่ทำให้ระบบขายพัง)
+    notifyTelegram(orderMessage);
+
+    // ถ้าสต๊อกเหลือ <= 5 ให้ยิงแจ้งเตือน Low Stock แยกอีกข้อความ
+    if (newStock <= 5) {
+      const lowStockMessage =
+        `🚨 <b>[เตือนภัย] สต๊อกสินค้าใกล้หมด!</b>\n` +
+        `- สินค้า: ${selectedProduct.name}\n` +
+        `- คงเหลือเพียง: ${newStock} ชิ้น\n` +
+        `⚠️ กรุณาเติมสต๊อกสินค้าด่วน!`;
+
+      notifyTelegram(lowStockMessage);
+    }
+    // ---- จบส่วนแจ้งเตือน Telegram ----
+
+    // สำเร็จ: แจ้งผล, เคลียร์ฟอร์ม, โหลดสินค้าใหม่ (เพื่อ stock ล่าสุด)
+    setMessage(
+      `ขาย "${selectedProduct.name}" จำนวน ${qtyNumber} ${selectedProduct.unit} สำเร็จ (รวม ${totalPrice.toFixed(
+        2
+      )} บาท)`
+    );
+    resetForm();
     fetchProducts();
+    setSaving(false);
   }
 
   return (
     <div>
-      <h1>รายการสินค้า</h1>
+      <h1>ขายสินค้า</h1>
 
-      {/* ฟอร์มเพิ่มสินค้าใหม่ */}
-      <div className="card">
-        <h2 style={{ marginTop: 0, fontSize: "16px" }}>เพิ่มสินค้าใหม่</h2>
-        <form
-          onSubmit={handleAddProduct}
-          style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}
-        >
-          <input
-            name="sku"
-            placeholder="SKU"
-            value={form.sku}
-            onChange={handleFormChange}
-            style={{ flex: "1 1 100px" }}
-          />
-          <input
-            name="name"
-            placeholder="ชื่อสินค้า"
-            value={form.name}
-            onChange={handleFormChange}
-            style={{ flex: "2 1 160px" }}
-          />
-          <input
-            name="price"
-            type="number"
-            step="0.01"
-            placeholder="ราคา"
-            value={form.price}
-            onChange={handleFormChange}
-            style={{ flex: "1 1 80px" }}
-          />
-          <input
-            name="stock"
-            type="number"
-            placeholder="คงเหลือ"
-            value={form.stock}
-            onChange={handleFormChange}
-            style={{ flex: "1 1 80px" }}
-          />
-          <input
-            name="unit"
-            placeholder="หน่วย"
-            value={form.unit}
-            onChange={handleFormChange}
-            style={{ flex: "1 1 80px" }}
-          />
-          <button type="submit">เพิ่มสินค้า</button>
-        </form>
-      </div>
-
-      {/* แสดงสถานะโหลด/error */}
-      {loading && <p>กำลังโหลดข้อมูล...</p>}
+      {loading && <p>กำลังโหลดข้อมูลสินค้า...</p>}
       {error && <p style={{ color: "red" }}>เกิดข้อผิดพลาด: {error}</p>}
 
-      {/* ตารางสินค้า */}
       {!loading && !error && (
-        <table>
-          <thead>
-            <tr>
-              <th>SKU</th>
-              <th>ชื่อสินค้า</th>
-              <th>ราคา</th>
-              <th>คงเหลือ</th>
-              <th>หน่วย</th>
-              <th>จัดการ</th>
-            </tr>
-          </thead>
-          <tbody>
-            {products.length === 0 && (
-              <tr>
-                <td colSpan={6}>ยังไม่มีสินค้า</td>
-              </tr>
-            )}
-            {products.map((product) => (
-              <tr key={product.id}>
-                {editingId === product.id ? (
-                  // ---------- แถวโหมดแก้ไข ----------
-                  <>
-                    <td>
-                      <input
-                        name="sku"
-                        value={editForm.sku}
-                        onChange={handleEditChange}
-                        style={{ width: "80px" }}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        name="name"
-                        value={editForm.name}
-                        onChange={handleEditChange}
-                        style={{ width: "120px" }}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        name="price"
-                        type="number"
-                        step="0.01"
-                        value={editForm.price}
-                        onChange={handleEditChange}
-                        style={{ width: "70px" }}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        name="stock"
-                        type="number"
-                        value={editForm.stock}
-                        onChange={handleEditChange}
-                        style={{ width: "60px" }}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        name="unit"
-                        value={editForm.unit}
-                        onChange={handleEditChange}
-                        style={{ width: "60px" }}
-                      />
-                    </td>
-                    <td style={{ display: "flex", gap: "6px" }}>
-                      <button onClick={() => handleSaveEdit(product.id)}>
-                        บันทึก
-                      </button>
-                      <button
-                        onClick={cancelEdit}
-                        style={{ backgroundColor: "#9ca3af" }}
-                      >
-                        ยกเลิก
-                      </button>
-                    </td>
-                  </>
-                ) : (
-                  // ---------- แถวโหมดแสดงปกติ ----------
-                  <>
-                    <td>{product.sku}</td>
-                    <td>{product.name}</td>
-                    <td>{Number(product.price).toFixed(2)}</td>
-                    <td>{product.stock}</td>
-                    <td>{product.unit}</td>
-                    <td style={{ display: "flex", gap: "6px" }}>
-                      <button onClick={() => startEdit(product)}>แก้ไข</button>
-                      <button
-                        onClick={() => handleDelete(product.id)}
-                        style={{ backgroundColor: "#dc2626" }}
-                      >
-                        ลบ
-                      </button>
-                    </td>
-                  </>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="card">
+          <form
+            onSubmit={handleSell}
+            style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+          >
+            {/* Dropdown เลือกสินค้า */}
+            <div>
+              <label style={{ display: "block", marginBottom: "4px" }}>
+                เลือกสินค้า
+              </label>
+              <select
+                value={selectedProductId}
+                onChange={(e) => setSelectedProductId(e.target.value)}
+                style={{ width: "100%" }}
+              >
+                <option value="">-- เลือกสินค้า --</option>
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} — {Number(p.price).toFixed(2)} บาท (คงเหลือ{" "}
+                    {p.stock} {p.unit})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* ช่องกรอกจำนวน */}
+            <div>
+              <label style={{ display: "block", marginBottom: "4px" }}>
+                จำนวนที่จะขาย
+              </label>
+              <input
+                type="number"
+                min="1"
+                value={quantity}
+                onChange={(e) => setQuantity(e.target.value)}
+                placeholder="จำนวน"
+                style={{ width: "100%" }}
+              />
+            </div>
+
+            {/* แสดงยอดรวมอัตโนมัติ */}
+            <div style={{ fontSize: "16px", fontWeight: "600" }}>
+              ยอดรวม: {totalPrice.toFixed(2)} บาท
+            </div>
+
+            <button type="submit" disabled={saving}>
+              {saving ? "กำลังบันทึก..." : "ขาย"}
+            </button>
+          </form>
+
+          {/* ข้อความยืนยันเมื่อขายสำเร็จ */}
+          {message && (
+            <p style={{ color: "#16a34a", marginTop: "12px" }}>{message}</p>
+          )}
+        </div>
       )}
     </div>
   );

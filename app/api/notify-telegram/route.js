@@ -1,5 +1,3 @@
-// API Route ฝั่ง server สำหรับส่งข้อความแจ้งเตือนเข้า Telegram
-// เก็บ Bot Token ไว้ฝั่ง server เท่านั้น (ไม่มี NEXT_PUBLIC_) เพื่อไม่ให้หลุดไปกับ client bundle
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
